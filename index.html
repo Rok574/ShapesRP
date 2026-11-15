@@ -197,6 +197,13 @@ input[type=color]{width:38px;height:38px;padding:2px}input[type=range]{padding:0
           </div>
         </div>
       </div>
+      <div class="iosRow">
+        <span><b>Encrypt Chats (AES-256-GCM)</b><span class="sub" id="encSub">Encrypted before cloud sync</span></span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button class="btn s" id="encPassBtn">Passphrase</button>
+          <input type="checkbox" id="encToggle" style="width:22px;height:22px;flex:none;accent-color:var(--ac)">
+        </div>
+      </div>
     </div>
 
     <div class="secHdr"><span>Roleplay &amp; Personas</span></div>
@@ -374,7 +381,7 @@ const HEAVY_MODELS=new Set(['Llama-3.2-3B-Instruct-abliterated-q4f16_1-MLC','gem
 let L={};try{L=JSON.parse(localStorage.getItem(KEY)||localStorage.getItem('shapesrp_v2_state')||'{}')||{}}catch{}
 const S={shapes:[],personas:[],threads:[],activeThreadId:null,activeShapeId:null,defaultPersonaId:'persona_default',chatPersonas:{},chats:{},backendMode:'webllm',
   apiUrl:'https://openrouter.ai/api/v1/chat/completions',apiKey:'',apiModel:'meta-llama/llama-3.1-8b-instruct:free',
-  selectedModel:mobile?MOBILE_SAFE_DEFAULT:DESKTOP_DEFAULT,lastModel:'',customModel:'',customUrl:'',customLib:'',lowMemMode:mobile,allowNsfw:false,...L};
+  selectedModel:mobile?MOBILE_SAFE_DEFAULT:DESKTOP_DEFAULT,lastModel:'',customModel:'',customUrl:'',customLib:'',lowMemMode:mobile,allowNsfw:false,encryptChats:true,...L};
 
 if(S.lastModel&&!S.customModel){S.selectedModel=S.lastModel}
 if(mobile&&!L.lastModel&&HEAVY_MODELS.has(S.selectedModel)){S.selectedModel=MOBILE_SAFE_DEFAULT}
@@ -433,12 +440,35 @@ function setSyncUI(st,lbl){
   $('syncDot').className='dot '+st;
   $('syncLbl').textContent=lbl;
 }
-function cloudPayload(){
-  return{shapes:S.shapes,personas:S.personas,threads:S.threads,defaultPersonaId:S.defaultPersonaId,
+const b64e=u8=>{let s='';for(let i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s)};
+const b64d=b=>Uint8Array.from(atob(b),c=>c.charCodeAt(0));
+async function getChatKey(uid){
+  const customPass=localStorage.getItem('shapesrp_enc_pass')||'';
+  const raw=new TextEncoder().encode((customPass||'shapesrp_e2ee_v1_')+(uid||'local'));
+  const base=await crypto.subtle.importKey('raw',raw,'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt:new TextEncoder().encode('shapesrp_salt_'+(uid||'local')),iterations:60000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function encryptThreads(threads,uid){
+  if(!crypto?.subtle)return null;
+  const key=await getChatKey(uid),iv=crypto.getRandomValues(new Uint8Array(12));
+  const data=new TextEncoder().encode(JSON.stringify(threads));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,data);
+  return{v:1,iv:b64e(iv),ct:b64e(new Uint8Array(ct))};
+}
+async function decryptThreads(enc,uid){
+  if(!enc?.iv||!enc?.ct||!crypto?.subtle)return null;
+  const key=await getChatKey(uid);
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64d(enc.iv)},key,b64d(enc.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+async function cloudPayload(){
+  const encOn=S.encryptChats!==false;
+  const encThreads=encOn?await encryptThreads(S.threads,R.user?.uid):null;
+  return{shapes:S.shapes,personas:S.personas,encThreads,threads:encOn?[]:S.threads,encryptChats:encOn,defaultPersonaId:S.defaultPersonaId,
     activeThreadId:S.activeThreadId,activeShapeId:S.activeShapeId,allowNsfw:S.allowNsfw,
     backendMode:S.backendMode,selectedModel:S.selectedModel,lastModel:S.lastModel,lowMemMode:S.lowMemMode,updatedAt:Date.now()};
 }
-function mergeFromCloud(d){
+function mergeFromCloud(d,cloudThreads){
   if(!d)return;
   const mergeArr=(local,cloud,preferNewer)=>{
     const map=new Map();
@@ -452,7 +482,7 @@ function mergeFromCloud(d){
   };
   S.shapes=mergeArr(S.shapes,d.shapes,false);
   S.personas=mergeArr(S.personas,d.personas,false);
-  S.threads=mergeArr(S.threads,d.threads,true);
+  S.threads=mergeArr(S.threads,cloudThreads||d.threads,true);
   if(d.defaultPersonaId&&S.personas.some(p=>p.id===d.defaultPersonaId))S.defaultPersonaId=d.defaultPersonaId;
   if(typeof d.allowNsfw==='boolean')S.allowNsfw=d.allowNsfw;
   fix();
@@ -461,9 +491,10 @@ async function pushCloud(){
   if(!fbDb||!R.user)return;
   try{
     setSyncUI('loading','Syncing');
-    await setDoc(doc(fbDb,'users',R.user.uid),cloudPayload(),{merge:true});
-    setSyncUI('ready','Synced');
-    $('authSub').textContent='Last synced '+new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+    await setDoc(doc(fbDb,'users',R.user.uid),await cloudPayload(),{merge:true});
+    const encOn=S.encryptChats!==false;
+    setSyncUI('ready',encOn?'Encrypted':'Synced');
+    $('authSub').textContent=(encOn?'Encrypted & synced ':'Synced ')+new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
   }catch(e){
     console.warn('Firestore sync error',e);
     setSyncUI('error','Sync err');
@@ -475,7 +506,21 @@ async function pullAndMergeCloud(user){
   try{
     setSyncUI('loading','Syncing');
     const snap=await getDoc(doc(fbDb,'users',user.uid));
-    if(snap.exists())mergeFromCloud(snap.data());
+    if(snap.exists()){
+      const d=snap.data();let ct=null;
+      if(d.encThreads){
+        try{ct=await decryptThreads(d.encThreads,user.uid)}
+        catch{
+          const pw=await askDialog('Enter your password to decrypt cloud chats:',true,'');
+          if(pw!==null&&pw!==''){
+            localStorage.setItem('shapesrp_enc_pass',pw);
+            try{ct=await decryptThreads(d.encThreads,user.uid);$('encSub').textContent='Encrypted with your password'}
+            catch{toast('Wrong password for cloud chats');setSyncUI('error','Locked');return}
+          }else{setSyncUI('error','Locked');return}
+        }
+      }
+      mergeFromCloud(d,ct);
+    }
     try{localStorage.setItem(KEY,JSON.stringify(S))}catch{}
     render();
     await pushCloud();
@@ -557,7 +602,7 @@ function installMobileConfig(){
   toast('Profile downloaded — open Settings → Profile Downloaded on iOS');
 }
 
-const av=e=>!e?'':e.avatarImage?`<img src="${esc(e.avatarImage)}" alt="" referrerpolicy="no-referrer">`:`<b style="background:${esc(e.avatarColor||'#7c5cff')}">${esc((e.name||'?').trim().slice(0,2).toUpperCase())}</b>`;
+const av=e=>!e?'':e.avatarImage?`<img src="${esc(e.avatarImage)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`:`<b style="background:${esc(e.avatarColor||'#7c5cff')}">${esc((e.name||'?').trim().slice(0,2).toUpperCase())}</b>`;
 const fmt=t=>esc(t).replace(/\*{2,}([^*\n]+)\*{2,}/g,'<i class="a">*$1*</i>').replace(/\*([^*\n]+)\*/g,'<i class="a">*$1*</i>').replace(/\n/g,'<br>');
 const TYPING='<span class="typing"><i></i><i></i><i></i></span>';
 const fmtTime=ts=>{if(!ts)return'';const d=new Date(ts),now=new Date();return d.toDateString()===now.toDateString()?d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):d.toLocaleDateString([],{month:'short',day:'numeric'})};
@@ -686,10 +731,12 @@ function rHead(){
 function rMsgs(){
   const s=shape(),t=thread(),c=$('msgs');
   if(!s||!t){c.innerHTML='';return}
-  const p=persona(t.id),ms=chat(t);
-  c.innerHTML=ms.length?ms.map((m,i)=>{const u=m.role==='user';
+  const p=persona(t.id),ms=chat(t),lim=R.msgLimit||60,start=Math.max(0,ms.length-lim);
+  const more=start>0?`<button class="btn s" id="loadOlder" style="margin:0 auto 8px">Show ${start} earlier message${start===1?'':'s'}</button>`:'';
+  c.innerHTML=ms.length?more+ms.slice(start).map((m,idx)=>{const i=start+idx,u=m.role==='user';
     return `<div class="msg ${u?'u':''}">${u?'':`<span class="av">${av(s)}</span>`}<div class="bub"><div class="bh"><small>${esc(u?p.name:s.name)}</small><span>${!u&&i===ms.length-1&&!R.busy?`<button data-a="re" data-i="${i}">↻</button>`:''}<button data-a="ed" data-i="${i}">✎</button><button data-a="del" data-i="${i}">✕</button></span></div><div class="mb">${fmt(m.content)||(R.busy&&i===ms.length-1?TYPING:'')}</div></div>${u?`<span class="av">${av(p)}</span>`:''}</div>`}).join('')
     :`<p class="mu" style="text-align:center;margin-top:2rem">Say hi to ${esc(s.name)} to start.</p>`;
+  if($('loadOlder'))$('loadOlder').onclick=()=>{R.msgLimit=(R.msgLimit||60)+60;rMsgs()};
   c.scrollTop=c.scrollHeight;
 }
 
@@ -779,7 +826,7 @@ function init(force){
         const w=new Worker(URL.createObjectURL(new Blob([`import{WebWorkerMLCEngineHandler as H}from"https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${VER}/+esm";const h=new H();self.onmessage=m=>h.onmessage(m)`],{type:'text/javascript'})),{type:'module'});
         w.onerror=()=>rej(Error('worker failed'));lib.CreateWebWorkerMLCEngine(w,id,cfg,co).then(res,rej)});
       let err;
-      for(const t of [...(ios?[]:[()=>worker(co)]),()=>lib.CreateMLCEngine(id,cfg,co),()=>lib.CreateMLCEngine(id,cfg)]){try{R.engine=await t();break}catch(e){err=e;console.warn(e)}}
+      for(const t of [()=>worker(co),()=>lib.CreateMLCEngine(id,cfg,co),()=>lib.CreateMLCEngine(id,cfg)]){try{R.engine=await t();break}catch(e){err=e;console.warn(e)}}
       if(!R.engine)throw err;
       R.ready=true;
       S.lastModel=S.customModel.trim()||S.selectedModel;sv();
@@ -1051,15 +1098,35 @@ $('emailInBtn').onclick=async()=>{
   if(!fbAuth)return toast('Firebase unavailable');
   const em=$('authEmail').value.trim(),pw=$('authPass').value;
   if(!em||!pw)return toast('Enter email & password');
+  localStorage.setItem('shapesrp_enc_pass',pw);
+  $('encSub').textContent='Encrypted with your password';
   try{await signInWithEmailAndPassword(fbAuth,em,pw)}catch(e){toast(e.message||'Sign-in failed')}
 };
 $('emailUpBtn').onclick=async()=>{
   if(!fbAuth)return toast('Firebase unavailable');
   const em=$('authEmail').value.trim(),pw=$('authPass').value;
   if(!em||pw.length<6)return toast('Enter email & 6+ char password');
+  localStorage.setItem('shapesrp_enc_pass',pw);
+  $('encSub').textContent='Encrypted with your password';
   try{await createUserWithEmailAndPassword(fbAuth,em,pw);toast('Account created!')}catch(e){toast(e.message||'Sign-up failed')}
 };
 $('syncNowBtn').onclick=pushCloud;
+$('encPassBtn').onclick=async()=>{
+  const cur=localStorage.getItem('shapesrp_enc_pass')||'';
+  const v=await askDialog('Optional E2EE passphrase (leave blank for automatic account encryption):',true,cur);
+  if(v===null)return;
+  if(v.trim())localStorage.setItem('shapesrp_enc_pass',v.trim());else localStorage.removeItem('shapesrp_enc_pass');
+  $('encSub').textContent=v.trim()?'Custom E2EE passphrase active':'Chats encrypted before cloud sync';
+  toast(v.trim()?'Custom encryption passphrase saved':'Using automatic account encryption');
+  if(R.user)pushCloud();
+};
+$('encToggle').checked=S.encryptChats!==false;
+function syncEncSub(){
+  if(S.encryptChats===false){$('encSub').textContent='Disabled (can still read encrypted chats)';return}
+  $('encSub').textContent=localStorage.getItem('shapesrp_enc_pass')?'Encrypted with your password':'Chats encrypted before cloud sync';
+}
+syncEncSub();
+$('encToggle').onchange=e=>{S.encryptChats=e.target.checked;sv();syncEncSub();toast(S.encryptChats?'Chat encryption ON':'Chat encryption OFF (encrypted chats still readable)')};
 $('signOutBtn').onclick=async()=>{if(fbAuth){await signOut(fbAuth);toast('Signed out')}};
 
 $('hmShapes').onclick=async e=>{
@@ -1071,7 +1138,7 @@ $('chatList').onclick=async e=>{
   const dl=e.target.closest('[data-tdel]');
   if(dl){e.stopPropagation();const t=S.threads.find(x=>x.id===dl.dataset.tdel);if(!t)return;if(await askDialog('Delete chat "'+t.title+'"?',false)){S.threads=S.threads.filter(x=>x.id!==t.id);sv();render()}return}
   const c=e.target.closest('[data-tid]');
-  if(c){const t=S.threads.find(x=>x.id===c.dataset.tid);if(t){S.activeThreadId=t.id;S.activeShapeId=t.shapeId;R.inChat=true;sv();render()}}
+  if(c){const t=S.threads.find(x=>x.id===c.dataset.tid);if(t){S.activeThreadId=t.id;S.activeShapeId=t.shapeId;R.msgLimit=60;R.inChat=true;$('chatView').hidden=false;rHead();rMsgs()}}
 };
 $('chatBack').onclick=()=>{R.inChat=false;render()};
 
