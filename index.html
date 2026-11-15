@@ -220,6 +220,10 @@ input[type=color]{width:38px;height:38px;padding:2px}input[type=range]{padding:0
       <div class="iosPad">
         <div class="tabs"><button class="btn" id="mLocal">Local WebLLM</button><button class="btn" id="mApi">Cloud API</button></div>
         <div id="apiBox" style="margin-top:12px" hidden>
+          <div class="row2" style="margin-bottom:10px">
+            <button class="btn s" id="preOR" type="button">OpenRouter</button>
+            <button class="btn s" id="preGroq" type="button">Groq (Fast)</button>
+          </div>
           <label style="margin-top:0">Endpoint (OpenAI-compatible)</label><input id="apiUrl" type="url">
           <label>API key</label><input id="apiKey" type="password" placeholder="sk-… / gsk_…" autocomplete="off">
           <label>Model name</label><input id="apiModel">
@@ -228,10 +232,11 @@ input[type=color]{width:38px;height:38px;padding:2px}input[type=range]{padding:0
         <div id="llmBox" style="margin-top:12px">
           <label style="margin-top:0">Local model (WebGPU)</label>
           <select id="model">
-            <option value="SmolLM2-360M-Instruct-q4f16_1-MLC">SmolLM2 360M — ultra-light mobile (~210 MB)</option>
+            <option value="SmolLM2-360M-Instruct-q4f16_1-MLC">SmolLM2 360M — basic, lightest (~210 MB)</option>
             <option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen 2.5 0.5B — mobile-safe (~350 MB)</option>
-            <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B — balanced mobile (~695 MB)</option>
-            <option value="gemma-4-E2B-it-q4f16_1-MLC">Gemma 4 E2B — official, high RAM (~1.5 GB)</option>
+            <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B — smart mobile (~695 MB)</option>
+            <option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC">Qwen 2.5 1.5B — smarter, newer phones (~1.0 GB)</option>
+            <option value="gemma-4-E2B-it-q4f16_1-MLC">Gemma 4 E2B — high RAM (~1.5 GB)</option>
             <option value="Llama-3.2-3B-Instruct-abliterated-q4f16_1-MLC">Llama 3.2 3B Abliterated — desktop (~2.3 GB)</option>
             <option value="gemma-4-E4B-it-q4f16_1-MLC">Gemma 4 E4B — desktop experimental (~4 GB)</option>
           </select>
@@ -623,7 +628,7 @@ const thread=()=>S.threads.find(t=>t.id===S.activeThreadId)||null;
 const shape=()=>{const t=thread();return (t&&S.shapes.find(s=>String(s.id)===String(t.shapeId)))||S.shapes.find(s=>String(s.id)===String(S.activeShapeId))||null};
 const persona=tid=>{const t=S.threads.find(x=>x.id===tid)||thread();const pid=t?.personaId||S.defaultPersonaId;return S.personas.find(p=>p.id===pid)||S.personas[0]};
 const chat=t=>{if(!t)return[];const s=S.shapes.find(x=>String(x.id)===String(t.shapeId));if(!t.messages.length&&s?.initialMessage?.trim())t.messages.push({id:'m'+Date.now(),role:'assistant',content:s.initialMessage.trim(),ts:Date.now()});return t.messages};
-const ctxSize=()=>S.lowMemMode?1024:2048;
+const ctxSize=()=>S.lowMemMode?1536:2048;
 const compress=(f,max=256)=>new Promise(res=>{const r=new FileReader();r.onload=()=>{const i=new Image();i.onerror=()=>res(r.result);i.onload=()=>{const k=Math.min(1,max/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.max(1,i.width*k|0);c.height=Math.max(1,i.height*k|0);c.getContext('2d').drawImage(i,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.85))};i.src=r.result};r.readAsDataURL(f)});
 
 function newThreadFor(shapeId,openIt=true){
@@ -747,18 +752,20 @@ const STY={Human:'Text casually like a real person — natural, relaxed.','Short
 
 function sysPrompt(s,p){
   const k=S.lowMemMode?.55:1,c=(t,n)=>String(t||'').slice(0,Math.round(n*k)),P=[];
-  P.push(`You ARE ${s.name}. Stay 100% in character. Never mention being an AI. Never write ${p.name}'s actions or dialogue.`);
+  P.push(`You ARE ${s.name}${s.age?` (Age: ${s.age})`:''}. Stay 100% in character. Never mention being an AI. Never write ${p.name}'s actions or dialogue.`);
   P.push(`Scene rule: You are physically present in the same scene with ${p.name} (NOT texting, NOT on a screen or message board unless Scenario explicitly says so). React directly to what ${p.name} just said and did. Never invent random meta-talk about updates, screens, or message boards.`);
   P.push(`Format: *actions and feelings* in single asterisks, spoken dialogue outside asterisks. ${STY[s.responseStyle]||''}`);
-  if(S.allowNsfw)P.push('Mature adult fiction is allowed. Stay in character; no lectures or refusals.');
+  if(S.allowNsfw)P.push(`Both ${s.name}${s.age?` (${s.age})`:' (adult)'} and ${p.name}${p.age?` (${p.age})`:' (adult)'} are consenting adults. Mature adult fiction is permitted; stay in character without refusals or lectures.`);
   const add=(l,v,n)=>v&&P.push(l+c(v,n));
-  add('Description:\n',s.description,700);
-  add('Scene: ',s.scenario,300);
-  add('Rules:\n',s.instructions,350);
+  add('World / Series: ',s.series,80);
+  add('Description:\n',s.description,650);
+  add('Scene: ',s.scenario,280);
+  add('Rules:\n',s.instructions,320);
+  add('Age: ',s.age,40);
   add('Traits: ',s.personalityTraits,150);
   add('Tone: ',s.tone,100);
-  add('Identity & lore:\n',s.lore,450);
-  add('Story: ',s.story,300);
+  add('Canon lore & other characters (embody naturally):\n',s.lore,950);
+  add('Story: ',s.story,400);
   add('Likes: ',s.likes,120);add('Dislikes: ',s.dislikes,120);
   add('Voice example:\n',(s.exampleDialogue||'').replace(/\{\{char\}\}/gi,s.name).replace(/\{\{user\}\}/gi,p.name),300);
   add('Remember: ',s.authorsNote,220);
@@ -821,7 +828,7 @@ function init(force){
       }
       if(!appConfig.model_list.some(m=>m.model_id===id))throw Error('Model "'+id+'" not found');
       const cfg={appConfig,initProgressCallback:r=>status('loading',(r.progress||0)*100||8,r.text||'Loading…')};
-      const co=S.lowMemMode?{context_window_size:1024,prefill_chunk_size:64}:undefined;
+      const co=S.lowMemMode?{context_window_size:1536,prefill_chunk_size:64}:undefined;
       const worker=co=>new Promise((res,rej)=>{
         const w=new Worker(URL.createObjectURL(new Blob([`import{WebWorkerMLCEngineHandler as H}from"https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${VER}/+esm";const h=new H();self.onmessage=m=>h.onmessage(m)`],{type:'text/javascript'})),{type:'module'});
         w.onerror=()=>rej(Error('worker failed'));lib.CreateWebWorkerMLCEngine(w,id,cfg,co).then(res,rej)});
@@ -906,7 +913,7 @@ async function regen(){const s=shape(),t=thread(),ms=t&&t.messages;if(ms?.length
 const slug=s=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
 const enc=encodeURIComponent;
 const J=u=>fetch(u,{signal:AbortSignal.timeout(8000)}).then(r=>r.ok?r.json():null).catch(()=>null);
-const PRI=[[/personalit|character|trait|behavio/,1100],[/appearance|design/,500],[/stor|backgr|histor|biograph|lore|plot|origin/,1300],[/relationship|abilit|skill|power|trivia|quote/,600]];
+const PRI=[[/relationship|allies|enem|friend|family|connect/,650],[/stor|backgr|histor|biograph|lore|plot|origin/,750],[/personalit|character|trait|behavio/,500],[/appearance|design|abilit|skill|power|trivia/,400]];
 
 function wikiText(html){
   const d=new DOMParser().parseFromString(html,'text/html');
@@ -919,7 +926,7 @@ function wikiText(html){
     if(hd){secs.push({h:hd.textContent.replace(/\[.*?\]/g,'').trim().toLowerCase(),t:''});continue}
     if(/^(P|UL|OL|DL|BLOCKQUOTE)$/.test(el.tagName)){const t=el.textContent.replace(/\[\w*\d*\]/g,'').replace(/\s+/g,' ').trim();if(t)secs.at(-1).t+=t+' '}
   }
-  const out=[];const intro=secs[0].t.trim().slice(0,1100);if(intro)out.push(intro);
+  const out=[];const intro=secs[0].t.trim().slice(0,550);if(intro)out.push(intro);
   for(const [re,cap] of PRI){const s=secs.slice(1).filter(x=>re.test(x.h)&&x.t.trim());if(s.length)out.push(`[${s[0].h}] `+s.map(x=>x.t).join(' ').trim().slice(0,cap))}
   return{text:out.join('\n'),img};
 }
@@ -973,7 +980,7 @@ DESCRIPTION: 3-5 sentences on who ${name} is, how they look, how they act and sp
 TRAITS: 5-8 comma-separated personality traits.
 TONE: 2-4 words describing their speaking style.
 AGE: age or "Unknown".
-STORY: 3-5 sentences of backstory and key canon events from the notes.
+STORY: 3-5 sentences of backstory, key canon events, and other characters/relationships from the notes.
 LIKES: short comma-separated list.
 DISLIKES: short comma-separated list.
 SCENARIO: 1-2 sentences setting a roleplay scene with {{user}}.
@@ -1150,7 +1157,7 @@ $('msgs').onclick=async e=>{const b=e.target.closest('[data-a]');if(!b)return;if
 $('menuBtn').onclick=e=>{e.stopPropagation();$('menu').hidden=!$('menu').hidden};document.addEventListener('click',()=>$('menu').hidden=true);
 const editCur=()=>{const s=shape();s&&openShape(s.id)};$('hInfo').onclick=$('mEdit').onclick=editCur;
 $('mNewThread').onclick=()=>{const s=shape();if(!s||R.busy)return;newThreadFor(s.id,true);toast('New chat started')};
-$('mLore').onclick=async()=>{const s=shape();if(!s)return;toast('Researching '+s.name+'…');const r=await fetchLore(s.name,s.series||'');if(r.text){s.lore=r.text.slice(0,1800);sv();toast('Lore updated: '+r.src.join(', '))}else toast('No wiki page found — open Edit and add the game/series')};
+$('mLore').onclick=async()=>{const s=shape();if(!s)return;toast('Researching '+s.name+'…');const r=await fetchLore(s.name,s.series||'');if(r.text){s.lore=r.text.slice(0,2400);sv();toast('Lore updated: '+r.src.join(', '))}else toast('No wiki page found — open Edit and add the game/series')};
 $('mNew').onclick=async()=>{const s=shape(),t=thread();if(!s||!t||R.busy)return;if(await askDialog('Clear messages in this chat with '+s.name+'?',false)){t.messages=[];t.updatedAt=Date.now();try{await R.engine?.resetChat()}catch{}sv();if(fbDb&&R.user){clearTimeout(R.syncT);pushCloud()}render();toast('Chat cleared')}};
 $('expAll').onclick=()=>{dl(`shapesrp-backup-${new Date().toISOString().slice(0,10)}.json`,{format:'shapesrp_backup_v1',exportedAt:new Date().toISOString(),shapes:S.shapes,personas:S.personas,threads:S.threads,activeThreadId:S.activeThreadId,activeShapeId:S.activeShapeId,defaultPersonaId:S.defaultPersonaId});toast('Backup exported')};
 $('impFile').onchange=e=>{importFile(e.target.files[0]);e.target.value=''};
@@ -1175,7 +1182,7 @@ $('research').onclick=async()=>{
     if(!r.text){L('No page found. Add the game/series above, or paste a wiki link, then try again.','w');return}
     $('resChips').innerHTML=r.src.map(s=>`<span class="chip">${esc(s)}</span>`).join('');
     L('✓ Found info on: '+r.src.join(', '),'ok');
-    $('f_lore').value=r.text.slice(0,1800);
+    $('f_lore').value=r.text.slice(0,2400);
     if(r.img&&!R.img&&!$('sUrl').value.trim()){$('sUrl').value=r.img;L('✓ Picture found','ok')}
     L(S.backendMode==='api'?'🧠 Asking your API model to write the card…':(R.ready?'🧠 Writing the character card with AI…':'🧠 Loading local model (first time takes a while), then writing the card…'));
     try{
@@ -1212,6 +1219,8 @@ $('model').onchange=e=>{S.selectedModel=e.target.value;S.lastModel=e.target.valu
 $('lowMem').checked=S.lowMemMode;$('lowMem').onchange=e=>{S.lowMemMode=e.target.checked;sv();dirty();toast('Low-memory mode '+(S.lowMemMode?'ON':'OFF'))};
 $('loadModel').onclick=()=>init(true);
 $('mLocal').onclick=()=>{S.backendMode='webllm';sv();syncMode()};$('mApi').onclick=()=>{S.backendMode='api';sv();syncMode()};
+$('preOR').onclick=()=>{S.apiUrl='https://openrouter.ai/api/v1/chat/completions';S.apiModel='meta-llama/llama-3.1-8b-instruct:free';$('apiUrl').value=S.apiUrl;$('apiModel').value=S.apiModel;sv();toast('OpenRouter preset applied')};
+$('preGroq').onclick=()=>{S.apiUrl='https://api.groq.com/openai/v1/chat/completions';S.apiModel='llama-3.3-70b-versatile';$('apiUrl').value=S.apiUrl;$('apiModel').value=S.apiModel;sv();toast('Groq preset applied')};
 [['apiUrl','apiUrl'],['apiKey','apiKey'],['apiModel','apiModel']].forEach(([i,k])=>{$(i).value=S[k];$(i).oninput=e=>{S[k]=e.target.value.trim();sv()}});
 $('inp').oninput=function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,130)+'px'};
 $('inp').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!mobile){e.preventDefault();send()}};
