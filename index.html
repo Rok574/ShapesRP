@@ -388,6 +388,7 @@ const S={shapes:[],personas:[],threads:[],activeThreadId:null,activeShapeId:null
   apiUrl:'https://openrouter.ai/api/v1/chat/completions',apiKey:'',apiModel:'meta-llama/llama-3.1-8b-instruct:free',
   selectedModel:mobile?MOBILE_SAFE_DEFAULT:DESKTOP_DEFAULT,lastModel:'',customModel:'',customUrl:'',customLib:'',lowMemMode:mobile,allowNsfw:false,encryptChats:true,...L};
 
+if(S.backendMode==='free')S.backendMode='webllm';
 if(S.lastModel&&!S.customModel){S.selectedModel=S.lastModel}
 if(mobile&&!L.lastModel&&HEAVY_MODELS.has(S.selectedModel)){S.selectedModel=MOBILE_SAFE_DEFAULT}
 if(!Array.isArray(S.shapes))S.shapes=[];
@@ -628,7 +629,7 @@ const thread=()=>S.threads.find(t=>t.id===S.activeThreadId)||null;
 const shape=()=>{const t=thread();return (t&&S.shapes.find(s=>String(s.id)===String(t.shapeId)))||S.shapes.find(s=>String(s.id)===String(S.activeShapeId))||null};
 const persona=tid=>{const t=S.threads.find(x=>x.id===tid)||thread();const pid=t?.personaId||S.defaultPersonaId;return S.personas.find(p=>p.id===pid)||S.personas[0]};
 const chat=t=>{if(!t)return[];const s=S.shapes.find(x=>String(x.id)===String(t.shapeId));if(!t.messages.length&&s?.initialMessage?.trim())t.messages.push({id:'m'+Date.now(),role:'assistant',content:s.initialMessage.trim(),ts:Date.now()});return t.messages};
-const ctxSize=()=>S.lowMemMode?1536:2048;
+const ctxSize=()=>S.lowMemMode?1024:2048;
 const compress=(f,max=256)=>new Promise(res=>{const r=new FileReader();r.onload=()=>{const i=new Image();i.onerror=()=>res(r.result);i.onload=()=>{const k=Math.min(1,max/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.max(1,i.width*k|0);c.height=Math.max(1,i.height*k|0);c.getContext('2d').drawImage(i,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.85))};i.src=r.result};r.readAsDataURL(f)});
 
 function newThreadFor(shapeId,openIt=true){
@@ -828,7 +829,7 @@ function init(force){
       }
       if(!appConfig.model_list.some(m=>m.model_id===id))throw Error('Model "'+id+'" not found');
       const cfg={appConfig,initProgressCallback:r=>status('loading',(r.progress||0)*100||8,r.text||'Loading…')};
-      const co=S.lowMemMode?{context_window_size:1536,prefill_chunk_size:64}:undefined;
+      const co=S.lowMemMode?{context_window_size:1024,prefill_chunk_size:32}:undefined;
       const worker=co=>new Promise((res,rej)=>{
         const w=new Worker(URL.createObjectURL(new Blob([`import{WebWorkerMLCEngineHandler as H}from"https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${VER}/+esm";const h=new H();self.onmessage=m=>h.onmessage(m)`],{type:'text/javascript'})),{type:'module'});
         w.onerror=()=>rej(Error('worker failed'));lib.CreateWebWorkerMLCEngine(w,id,cfg,co).then(res,rej)});
@@ -873,7 +874,7 @@ async function reply(s,t,nudge){
     const rawTemp=typeof s.temperature==='number'?s.temperature:.7;
     const temp=S.lowMemMode?Math.min(rawTemp,.72):rawTemp;
     const req={messages:[{role:'system',content:sys},...keep],temperature:temp,frequency_penalty:.65,presence_penalty:.45,max_tokens:maxT,stop:[`\n${p.name}:`]};
-    if(S.backendMode==='api'){
+if(S.backendMode==='api'){
       if(!S.apiUrl||!S.apiKey)throw Error('Add your API endpoint & key in Settings');
       const r=await fetch(S.apiUrl,{method:'POST',signal:R.ac.signal,headers:{'Content-Type':'application/json',Authorization:'Bearer '+S.apiKey},body:JSON.stringify({...req,model:S.apiModel})});
       if(!r.ok)throw Error(`API ${r.status}: ${(await r.text()).slice(0,120)}`);
@@ -912,13 +913,19 @@ async function regen(){const s=shape(),t=thread(),ms=t&&t.messages;if(ms?.length
 // ---------- Web research (wikis) ----------
 const slug=s=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
 const enc=encodeURIComponent;
-const J=u=>fetch(u,{signal:AbortSignal.timeout(8000)}).then(r=>r.ok?r.json():null).catch(()=>null);
+async function J(u){
+  for(const target of [u,'https://corsproxy.io/?'+encodeURIComponent(u),'https://api.allorigins.win/raw?url='+encodeURIComponent(u)]){
+    try{const r=await fetch(target,{signal:AbortSignal.timeout(7000)});if(r.ok)return await r.json()}catch{}
+  }
+  return null;
+}
 const PRI=[[/relationship|allies|enem|friend|family|connect/,650],[/stor|backgr|histor|biograph|lore|plot|origin/,750],[/personalit|character|trait|behavio/,500],[/appearance|design|abilit|skill|power|trivia/,400]];
 
 function wikiText(html){
   const d=new DOMParser().parseFromString(html,'text/html');
   const im=d.querySelector('aside img, .portable-infobox img, .infobox img, figure img');
   let img=im&&(im.getAttribute('data-src')||im.getAttribute('src')||'');if(img.startsWith('//'))img='https:'+img;if(!/^https?:/.test(img))img='';
+  const ib=[...d.querySelectorAll('.portable-infobox .pi-item, .infobox tr')].map(el=>el.textContent.replace(/\s+/g,' ').trim()).filter(t=>/relat|friend|all|enem|famil|affiliat|team|faction|guild|origin|voiced/i.test(t)).slice(0,8).join('; ');
   d.querySelectorAll('table,sup,style,script,aside,figure,.toc,.navbox,.mw-editsection,.gallery,.reference,.noprint,.hatnote').forEach(e=>e.remove());
   const root=d.querySelector('.mw-parser-output')||d.body,secs=[{h:'intro',t:''}];
   for(const el of root.children){
@@ -928,6 +935,7 @@ function wikiText(html){
   }
   const out=[];const intro=secs[0].t.trim().slice(0,550);if(intro)out.push(intro);
   for(const [re,cap] of PRI){const s=secs.slice(1).filter(x=>re.test(x.h)&&x.t.trim());if(s.length)out.push(`[${s[0].h}] `+s.map(x=>x.t).join(' ').trim().slice(0,cap))}
+  if(ib)out.unshift('[infobox] '+ib.slice(0,450));
   return{text:out.join('\n'),img};
 }
 async function mwPage(api,name){
@@ -1218,7 +1226,8 @@ $('model').onchange=e=>{S.selectedModel=e.target.value;S.lastModel=e.target.valu
 [['custom','customModel'],['customUrl','customUrl'],['customLib','customLib']].forEach(([i,k])=>{$(i).value=S[k];$(i).oninput=e=>{S[k]=e.target.value.trim();sv();dirty()}});
 $('lowMem').checked=S.lowMemMode;$('lowMem').onchange=e=>{S.lowMemMode=e.target.checked;sv();dirty();toast('Low-memory mode '+(S.lowMemMode?'ON':'OFF'))};
 $('loadModel').onclick=()=>init(true);
-$('mLocal').onclick=()=>{S.backendMode='webllm';sv();syncMode()};$('mApi').onclick=()=>{S.backendMode='api';sv();syncMode()};
+$('mLocal').onclick=()=>{S.backendMode='webllm';sv();syncMode();init(false)};$('mApi').onclick=()=>{S.backendMode='api';sv();syncMode()};
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&ios&&R.engine){try{R.engine.unload()}catch{}R.engine=null;R.ready=false;R.initP=null;status('idle',0,'Unloaded in background to save RAM')}});
 $('preOR').onclick=()=>{S.apiUrl='https://openrouter.ai/api/v1/chat/completions';S.apiModel='meta-llama/llama-3.1-8b-instruct:free';$('apiUrl').value=S.apiUrl;$('apiModel').value=S.apiModel;sv();toast('OpenRouter preset applied')};
 $('preGroq').onclick=()=>{S.apiUrl='https://api.groq.com/openai/v1/chat/completions';S.apiModel='llama-3.3-70b-versatile';$('apiUrl').value=S.apiUrl;$('apiModel').value=S.apiModel;sv();toast('Groq preset applied')};
 [['apiUrl','apiUrl'],['apiKey','apiKey'],['apiModel','apiModel']].forEach(([i,k])=>{$(i).value=S[k];$(i).oninput=e=>{S[k]=e.target.value.trim();sv()}});
